@@ -50,7 +50,7 @@ namespace Libraria.Net {
 		public Socket ClientSocket;
 		public DateTime ConnectedAt;
 		public string Prompt;
-		public bool EscapeSequences;
+		public bool EscapeSequences, Connected;
 		public object Userdata;
 
 		string AliasInternal;
@@ -73,6 +73,7 @@ namespace Libraria.Net {
 			CurrentInput = new StringBuilder();
 			Alias = RemoteEndPoint = ((IPEndPoint)ClientSocket.RemoteEndPoint).ToString();
 
+			Connected = true;
 			Echo = true;
 			EscapeSequences = true;
 			Send(TelnetCommand.IAC, Echo ? TelnetCommand.WILL : TelnetCommand.WONT, TelnetCommand.Echo);
@@ -88,6 +89,8 @@ namespace Libraria.Net {
 		}
 
 		public byte ReceiveRaw() {
+			if (!Connected)
+				return 0;
 			return (byte)ClientStream.ReadByte();
 		}
 
@@ -128,13 +131,16 @@ namespace Libraria.Net {
 		}
 
 		public void Send(params object[] Args) {
-			for (int i = 0; i < Args.Length; i++)
-				if (Args[i] is byte) {
-					ClientStream.WriteByte((byte)Args[i]);
-				} else if (Args[i] is TelnetCommand) {
-					ClientStream.WriteByte((byte)(TelnetCommand)Args[i]);
-				} else
-					throw new Exception("Cannot send " + Args[i].GetType());
+			try {
+				for (int i = 0; i < Args.Length; i++)
+					if (Args[i] is byte) {
+						ClientStream.WriteByte((byte)Args[i]);
+					} else if (Args[i] is TelnetCommand) {
+						ClientStream.WriteByte((byte)(TelnetCommand)Args[i]);
+					} else
+						throw new Exception("Cannot send " + Args[i].GetType());
+			} catch (Exception) {
+			}
 		}
 
 		public char Read() {
@@ -175,12 +181,16 @@ namespace Libraria.Net {
 
 		bool _DisableWrite;
 		public void Write(char C) {
-			if (!EscapeSequences && C == (char)0x1B)
-				_DisableWrite = true;
-			if (!_DisableWrite || EscapeSequences)
-				ClientStream.WriteByte((byte)C);
-			if (!EscapeSequences && C == 'm')
-				_DisableWrite = false;
+			try {
+				if (!EscapeSequences && C == (char)0x1B)
+					_DisableWrite = true;
+				if (!_DisableWrite || EscapeSequences)
+					ClientStream.WriteByte((byte)C);
+				if (!EscapeSequences && C == 'm')
+					_DisableWrite = false;
+			} catch (Exception) {
+				return;
+			}
 		}
 
 		public void Write(string Str) {
@@ -244,11 +254,21 @@ namespace Libraria.Net {
 			while (Running) {
 				Socket ClientSocket = ServerSocket.Accept();
 				TelnetClient Client = new TelnetClient(this, ClientSocket, DateTime.Now);
+				lock (Clients)
 				Clients.Add(Client);
 
 				if (OnConnected != null)
 					OnConnected(Client);
 			}
+		}
+
+		public TelnetClient FindClient(string Alias) {
+			lock (Clients) {
+				foreach (var C in Clients)
+					if (C.Alias == Alias)
+						return C;
+			}
+			return null;
 		}
 
 		public void Close() {
@@ -258,22 +278,28 @@ namespace Libraria.Net {
 		public void Write(char C) {
 			if (OnWrite != null)
 				OnWrite(C.ToString());
-			foreach (var Cl in Clients)
-				Cl.Write(C);
+			lock (Clients) {
+				foreach (var Cl in Clients)
+					Cl.Write(C);
+			}
 		}
 
 		public void Write(string Str) {
 			if (OnWrite != null)
 				OnWrite(Str);
-			foreach (var Cl in Clients)
-				Cl.Write(Str);
+			lock (Clients) {
+				foreach (var Cl in Clients)
+					Cl.Write(Str);
+			}
 		}
 
 		public void WriteLine(string Str) {
 			if (OnWrite != null)
 				OnWrite(Str + "\n");
-			foreach (var Cl in Clients)
-				Cl.WriteLine(Str);
+			lock (Clients) {
+				foreach (var Cl in Clients)
+					Cl.WriteLine(Str);
+			}
 		}
 
 		public void WriteLine(string Fmt, params object[] Args) {
@@ -283,8 +309,10 @@ namespace Libraria.Net {
 		public void InsertLine(string Str) {
 			if (OnWrite != null)
 				OnWrite(Str + "\n");
-			foreach (var Cl in Clients)
-				Cl.InsertLine(Str);
+			lock (Clients) {
+				foreach (var Cl in Clients)
+					Cl.InsertLine(Str);
+			}
 		}
 
 		public void InsertLine(string Fmt, params object[] Args) {
@@ -292,10 +320,13 @@ namespace Libraria.Net {
 		}
 
 		public void Disconnect(TelnetClient TC) {
-			if (Clients.Contains(TC)) {
-				Clients.Remove(TC);
-				TC.ClientSocket.Disconnect(false);
-				TC.ClientSocket.Dispose();
+			lock (Clients) {
+				if (Clients.Contains(TC)) {
+					Clients.Remove(TC);
+					TC.Connected = false;
+					TC.ClientSocket.Disconnect(false);
+					TC.ClientSocket.Dispose();
+				}
 			}
 		}
 	}

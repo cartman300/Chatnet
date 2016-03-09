@@ -36,7 +36,7 @@ namespace Chatnet {
 			Console.WriteLine("Starting telnet server");
 			TS.Run();
 #if !DEBUG
-		} catch (Exception E) {
+				} catch (Exception E) {
 					File.AppendAllText("Exceptions.txt", E.ToString());
 				}
 			}
@@ -77,18 +77,18 @@ namespace Chatnet {
 				Client.InsertLine("Invalid username");
 				goto EnterAlias;
 			}
+			lock (Server.Clients)
 			foreach (var Cl in Server.Clients)
-				if (Cl.Alias == Alias) {
-					Client.InsertLine("Username '{0}' already taken, try again", Alias);
-					goto EnterAlias;
-				}
+					if (Cl.Alias == Alias) {
+						Client.InsertLine("Username '{0}' already taken, try again", Alias);
+						goto EnterAlias;
+					}
 			Client.Alias = Alias;
 
 			DateTime Last = DateTime.Now;
 			int Warnings = 0;
 
-			bool Running = true;
-			while (Running) {
+			while (Client.Connected) {
 				string Input = Client.ReadLine(Escd(Client.ToString(), "1m", "32m") + Escd(" $ ", "1m", "32m"), true).Trim();
 				if (Input.Length == 0) {
 					Client.Write('\r');
@@ -103,20 +103,11 @@ namespace Chatnet {
 							new Type[] { typeof(TelnetClient), typeof(TelnetServer), typeof(string[]), typeof(string) });
 						Client.WriteLine("");
 
-						try {
-							if (MI != null)
-								MI.Invoke(null, new object[] { Client, Server, Cmd, Input });
-							else
-								Client.InsertLine(Escd("Unknown command '{0}'", "31m"), Cmd[0]);
-						} catch (TargetInvocationException E) {
-							if (E.InnerException is DisconnectException) {
-								Running = false;
-								continue;
-							} else
-								throw;
-						}
+						if (MI != null)
+							MI.Invoke(null, new object[] { Client, Server, Cmd, Input });
+						else
+							Client.InsertLine(Escd("Unknown command '{0}'", "31m"), Cmd[0]);
 					}
-
 					continue;
 				}
 
@@ -125,20 +116,24 @@ namespace Chatnet {
 
 				if (Warnings > 5) {
 					Server.InsertLine(TStamp() + Colored(ServerCol, "Kicked for flooding: {0}"), Client);
-					Running = false;
+					Client.Disconnect();
 					continue;
 				}
 
 				Last = DateTime.Now;
-				Server.InsertLine(TStamp() + Escd("\a{0}: {1}", "36m"), Client, Input);
+				Server.InsertLine(Say(Client.ToString(), Input));
 			}
 #if !DEBUG
 			} catch (Exception) {
 			}
 #endif
-
-			Client.Disconnect();
+			if (Client.Connected)
+				Client.Disconnect();
 			Server.InsertLine(TStamp() + Colored(ServerCol, "Client disconnected: {0}"), Client);
+		}
+
+		public static string Say(string Client, string Input) {
+			return string.Format(TStamp() + Escd("\a{0}: {1}", "36m"), Client, Input);
 		}
 	}
 
@@ -158,7 +153,9 @@ namespace Chatnet {
 		public static object quit(TelnetClient Client, TelnetServer Server, string[] Args, string In) {
 			if (Client == null)
 				return "Disconnects user";
-			throw new DisconnectException();
+			Client.Disconnect();
+
+			return null;
 		}
 
 		public static object q(TelnetClient Client, TelnetServer Server, string[] Args, string In) {
@@ -184,8 +181,10 @@ namespace Chatnet {
 				return "Returns all online users";
 
 			Client.InsertLine("Online users:");
-			foreach (var Cl in Server.Clients)
-				Client.InsertLine("  " + Cl);
+			lock (Server.Clients) {
+				foreach (var Cl in Server.Clients)
+					Client.InsertLine("  " + Cl);
+			}
 
 			return null;
 		}
@@ -199,8 +198,20 @@ namespace Chatnet {
 
 			return null;
 		}
-	}
 
-	class DisconnectException : Exception {
+		public static object pm(TelnetClient Client, TelnetServer Server, string[] Args, string In) {
+			if (Client == null)
+				return "Send private message to user";
+
+			if (Args.Length < 3)
+				return null;
+			TelnetClient PMClient = Server.FindClient(Args[1]);
+			if (PMClient != null) {
+				string Line = Program.Say(Client + " to " + PMClient, In.Substring(In.IndexOf(' ', In.IndexOf(' ') + 1) + 1));
+				Client.InsertLine(Line);
+				PMClient.InsertLine(Line);
+			}
+			return null;
+		}
 	}
 }
