@@ -1,0 +1,2 @@
+# Chatnet
+Telnet chat
